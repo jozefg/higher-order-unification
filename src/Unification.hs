@@ -23,9 +23,6 @@ data Term = FreeVar Id
           | Pi Term Term
           deriving (Eq, Show, Ord)
 
-type Constraint = (Term, Term)
-data Def = Axiom | Def Term
-
 raise :: Int -> Term -> Term
 raise = go 0
   where go lower i t = case t of
@@ -111,6 +108,8 @@ applyLamTelescope :: Term -> [Term] -> Term
 applyLamTelescope retTp [] = retTp
 applyLamTelescope retTp (argTp : rest) =
   Lam . applyLamTelescope retTp $ map (raise 1) rest
+
+type Constraint = (Term, Term)
 
 simplify :: Constraint -> FreshM (S.Set Constraint)
 simplify (t1, t2)
