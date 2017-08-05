@@ -264,6 +264,8 @@ are also using a package a threw together a few years ago called
 provides a simple monad for generating fresh values. The sort of thing
 that I always end up needing in compilers. Without further-ado, let's
 start going through the cases for `simplify`. Each one of which
+corresponds to a simplifying move we are allowed to make on a
+constraint, ordered in terms of priority.
 
 ``` haskell
     simplify (t1, t2)
