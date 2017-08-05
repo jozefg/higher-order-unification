@@ -334,3 +334,92 @@ just return the inputted constraint since we can make it no simpler.
       | otherwise =
         if isStuck t1 || isStuck t2 then return $ S.singleton (t1, t2) else mzero
 ```
+
+Now we turn to the most complicated part of the algorithm, where we
+actual try and produce possible and partial solutions for our
+unification constraints. The basic idea is to work with constraints of
+the form
+
+``` haskell
+    M a1 a2 ... an = A b1 b2 ... bm
+```
+
+where `M` is a metavariable and `A` is a some term, probably a free
+variable. The first part of this code is to extract the relevant
+pieces of information from the constraint. Therefore, the code roughly
+looks like
+
+``` haskell
+    tryFlexRigid :: Constraint -> [UnifyM [Subst]]
+    tryFlexRigid (t1, t2)
+      | (MetaVar i, cxt1) <- peelApTelescope t1,
+        (stuckTerm, cxt2) <- peelApTelescope t2,
+        not (i `S.member` metavars t2) = error "TODO"
+      | (MetaVar i, cxt1) <- peelApTelescope t2,
+        (stuckTerm, cxt2) <- peelApTelescope t1,
+        not (i `S.member` metavars t1) = error "TODO"
+      | otherwise = []
+```
+
+This simply uses `peelApTelescope` to extract the 4 components `M`,
+`(a1 ... an)`, `A` and `(b1 ... bm)`. The resulting type is "morally"
+supposed to be `[Subst]` but for technical reasons we need to
+`[UnifyM [Subst]]` because we need to generate metavariables for the
+substitutions. There are exactly 2 forms that `M` may take
+
+ - `M = λ x1. ... λ xn. xi (M1 x1 ... xn) ... (Mr x1 ... xn)`
+ - `M = λ x1. ... λ xn. A (M1 x1 ... xn) ... (Mr x1 ... xn)`
+   (if `A` is closed)
+
+These are the only two forms that `M` can take because if `M` is any
+other constant or free variable than it would immediately
+contradictory, `M` couldn't possibly unify with `A b1 ... bm` as we
+need it to. Therefore, `tryFlexRigid` will produce a list of such
+substitutions (mod effects) replacing `M` with both of these. Since we
+don't know how many subterms we must apply to `xi` or `A` this will be
+an infinitely long list. More on this complication will
+follow. Therefore, we can replace `error "TODO"` with
+
+``` haskell
+    tryFlexRigid :: Constraint -> [UnifyM [Subst]]
+    tryFlexRigid (t1, t2)
+      | (MetaVar i, cxt1) <- peelApTelescope t1,
+        (stuckTerm, cxt2) <- peelApTelescope t2,
+        not (i `S.member` metavars t2) = proj (length cxt1) i stuckTerm 0
+      | (MetaVar i, cxt1) <- peelApTelescope t2,
+        (stuckTerm, cxt2) <- peelApTelescope t1,
+        not (i `S.member` metavars t1) = proj (length cxt1) i stuckTerm 0
+      | otherwise = []
+```
+
+Here `proj` generates the list of substitutions. It's arguments are
+
+ 1. The number of bound variables
+ 2. The metavariable we're trying to find substitutions for
+ 3. The term `A` that we may use to construct a substitution for `M`
+ 4. The number of subterms to generate (this will be incremented in
+    the recursive call)
+
+It's defined just as
+
+``` haskell
+    proj bvars mv f nargs =
+      generateSubst bvars mv f nargs : proj bvars mv f (nargs + 1)
+```
+
+Now the work is done in the actual function
+`generateSubst :: Int -> Id -> Term -> Int -> UnifyM [Subst]`. We have
+already explained the behavior of `generateSubst`, it's just going to
+create all possible substitutions of the form described above. There
+is little more to say than to just show the code.
+
+``` haskell
+    generateSubst bvars mv f nargs = do
+      let mkLam tm = foldr ($) tm (replicate bvars Lam)
+      let saturateMV tm = foldl' Ap tm (map LocalVar [0..bvars - 1])
+      let mkSubst = M.singleton mv
+      args <- map saturateMV . map MetaVar <$> replicateM nargs (lift gen)
+      return [mkSubst . mkLam $ applyApTelescope t args
+             | t <- map LocalVar [0..bvars - 1] ++
+                    if isClosed f then [f] else []]
+```

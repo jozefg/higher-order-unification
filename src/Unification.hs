@@ -151,13 +151,6 @@ simplify (t1, t2)
 
 type Subst = M.Map Id Term
 
-manySubst :: Subst -> Term -> Term
-manySubst s t = M.foldrWithKey (\mv sol t -> substMV sol mv t) t s
-
-(<+>) :: Subst -> Subst -> Subst
-s1 <+> s2 | not (M.null (M.intersection s1 s2)) = error "Impossible"
-s1 <+> s2 = M.union (manySubst s1 <$> s2) s1
-
 tryFlexRigid :: Constraint -> [UnifyM [Subst]]
 tryFlexRigid (t1, t2)
   | (MetaVar i, cxt1) <- peelApTelescope t1,
@@ -182,6 +175,13 @@ repeatedlySimplify :: S.Set Constraint -> UnifyM (S.Set Constraint)
 repeatedlySimplify cs = do
   cs' <- fold <$> traverse simplify (S.toList cs)
   if cs' == cs then return cs else repeatedlySimplify cs'
+
+manySubst :: Subst -> Term -> Term
+manySubst s t = M.foldrWithKey (\mv sol t -> substMV sol mv t) t s
+
+(<+>) :: Subst -> Subst -> Subst
+s1 <+> s2 | not (M.null (M.intersection s1 s2)) = error "Impossible"
+s1 <+> s2 = M.union (manySubst s1 <$> s2) s1
 
 unify :: Subst -> S.Set Constraint -> UnifyM (Subst, S.Set Constraint)
 unify s cs = do
