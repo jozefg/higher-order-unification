@@ -47,7 +47,7 @@ solution and to only produce solutions that are at least not
 obviously wrong. By doing this, we drastically cut down the search
 space and produce answers reasonably quickly.
 
-## The Set Up
+### The Set Up
 
 To begin with, we introduce the tools that we will need to even code
 up the unification algorithm. The first critical point is how we
@@ -134,3 +134,93 @@ since we're using globally unique identifiers for them.
       Lam body -> Lam (substMV (raise 1 new) i body)
       Pi tp body -> Pi (substMV new i tp) (substMV (raise 1 new) i body)
 ```
+
+Now there are only a few more utility functions left before we can get
+to the actual unification. We need a function to gather all of the
+metavariables in a term. For this we use a `Set` from `containers` and
+just fold over the structure of the term.
+
+``` haskell
+    metavars :: Term -> S.Set Id
+    metavars t = case t of
+      FreeVar i -> S.empty
+      LocalVar i -> S.empty
+      MetaVar j -> S.singleton j
+      Uni -> S.empty
+      Ap l r -> metavars l <> metavars r
+      Lam body -> metavars body
+      Pi tp body -> metavars tp <> metavars body
+```
+
+Another useful function will be necessary for enforcing the condition
+that we only unify metavariables with closed terms (no capturing). In
+order to handle this, we will need to check that a given term is
+closed. This is as simple as looking to see if it mentions the
+`FreeVar` constructor since `LocalVar` is used for only bound
+variables by invariant.
+
+``` haskell
+    isClosed :: Term -> Bool
+    isClosed t = case t of
+      FreeVar i -> False
+      LocalVar i -> True
+      MetaVar j -> True
+      Uni -> True
+      Ap l r -> isClosed l && isClosed r
+      Lam body -> isClosed body
+      Pi tp body -> isClosed tp && isClosed body
+```
+
+The last complicated utility function is `reduce`. This is actually
+just a simple interpreter for the language we defined earlier. It
+essentially repeatedly searches for `Ap (Lam ...) ...` and when it
+finds such an occurrence substitutes the argument into the body of the
+function as one might expect. I have made this function reduce
+everywhere because it seems to provide a significant performance
+improvement in many cases.
+
+``` haskell
+    reduce :: Term -> Term
+    reduce t = case t of
+      FreeVar i -> FreeVar i
+      LocalVar j -> LocalVar j
+      MetaVar i -> MetaVar i
+      Uni -> Uni
+      Ap l r -> case reduce l of
+        Lam body -> reduce (subst r 0 body)
+        l' -> Ap l' (reduce r)
+      Lam body -> Lam (reduce body)
+      Pi tp body -> Pi (reduce tp) (reduce body)
+```
+
+The remaining utility funcitons are simply checks and manipulations
+that we will frequently need on terms. We have a function which checks
+whether a term is of the form `M e1 e2 e3 ...` for some metavariable
+`M`; such terms are said to be stuck.
+
+``` haskell
+    isStuck :: Term -> Bool
+    isStuck MetaVar {} = True
+    isStuck (Ap f _) = isStuck f
+    isStuck _ = False
+```
+
+The remaining utility functions simply convert telescopes of
+applications, `f a1 a2 a3 ...`, into an function and a list of
+arguments, `(f, [a1 ... an])` and then we have a function to put
+things back again.
+
+``` haskell
+    peelApTelescope :: Term -> (Term, [Term])
+    peelApTelescope t = go t []
+      where go (Ap f r) rest = go f (r : rest)
+            go t rest = (t, rest)
+
+    applyApTelescope :: Term -> [Term] -> Term
+    applyApTelescope = foldl' Ap
+```
+
+We are now in a position to turn to implementing the actual
+unification algorithm with all of our utilities in hand.
+
+### The Unification Algorithm

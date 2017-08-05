@@ -10,6 +10,10 @@ import           Data.Foldable
 import           Data.Monoid
 import qualified Data.Set            as S
 
+--------------------------------------------------
+------------------ the language ------------------
+--------------------------------------------------
+
 type Id = Int
 type Index = Int
 data Term = FreeVar Id
@@ -21,6 +25,8 @@ data Term = FreeVar Id
           | Pi Term Term
           deriving (Eq, Show, Ord)
 
+-- | Raise @LocalVar@s without a binding by @i@ amount. Used to avoid
+-- capture in terms with free de Bruijn variables.
 raise :: Int -> Term -> Term
 raise = go 0
   where go lower i t = case t of
@@ -32,6 +38,7 @@ raise = go 0
           Lam body -> Lam (go (lower + 1) i body)
           Pi tp body -> Pi (go lower i tp) (go (lower + 1) i body)
 
+-- | Substitute a term for the de Bruijn variable @i@.
 subst :: Term -> Int -> Term -> Term
 subst new i t = case t of
   FreeVar i -> FreeVar i
@@ -45,6 +52,7 @@ subst new i t = case t of
   Lam body -> Lam (subst (raise 1 new) (i + 1) body)
   Pi tp body -> Pi (subst new i tp) (subst (raise 1 new) (i + 1) body)
 
+-- | Substitute a term for all metavariables with a given identifier.
 substMV :: Term -> Id -> Term -> Term
 substMV new i t = case t of
   FreeVar i -> FreeVar i
@@ -55,6 +63,7 @@ substMV new i t = case t of
   Lam body -> Lam (substMV (raise 1 new) i body)
   Pi tp body -> Pi (substMV new i tp) (substMV (raise 1 new) i body)
 
+-- | Gather all the metavariables in a term into a set.
 metavars :: Term -> S.Set Id
 metavars t = case t of
   FreeVar i -> S.empty
@@ -65,6 +74,8 @@ metavars t = case t of
   Lam body -> metavars body
   Pi tp body -> metavars tp <> metavars body
 
+-- | Returns @True@ if a term has no free variables and is therefore a
+-- valid candidate for a solution to a metavariable.
 isClosed :: Term -> Bool
 isClosed t = case t of
   FreeVar i -> False
@@ -75,6 +86,9 @@ isClosed t = case t of
   Lam body -> isClosed body
   Pi tp body -> isClosed tp && isClosed body
 
+-- | Implement reduction for the language. Given a term, normalize it.
+-- This boils down mainly to applying lambdas to their arguments and all
+-- the appropriate congruence rules.
 reduce :: Term -> Term
 reduce t = case t of
   FreeVar i -> FreeVar i
@@ -87,26 +101,27 @@ reduce t = case t of
   Lam body -> Lam (reduce body)
   Pi tp body -> Pi (reduce tp) (reduce body)
 
-type FreshM = LogicT (Gen Id)
-
+-- | Check to see if a term is blocked on applying a metavariable.
 isStuck :: Term -> Bool
 isStuck MetaVar {} = True
 isStuck (Ap f _) = isStuck f
 isStuck _ = False
 
+-- | Turn @f a1 a2 a3 a4 ... an@ to @(f, [a1...an])@.
 peelApTelescope :: Term -> (Term, [Term])
 peelApTelescope t = go t []
   where go (Ap f r) rest = go f (r : rest)
         go t rest = (t, rest)
 
+-- | Turn @(f, [a1...an])@ into @f a1 a2 a3 a4 ... an@.
 applyApTelescope :: Term -> [Term] -> Term
 applyApTelescope = foldl' Ap
 
-applyLamTelescope :: Term -> [Term] -> Term
-applyLamTelescope retTp [] = retTp
-applyLamTelescope retTp (argTp : rest) =
-  Lam . applyLamTelescope retTp $ map (raise 1) rest
+-----------------------------------------------------------------
+-------------- the actual unification code ----------------------
+-----------------------------------------------------------------
 
+type FreshM = LogicT (Gen Id)
 type Constraint = (Term, Term)
 
 simplify :: Constraint -> FreshM (S.Set Constraint)
