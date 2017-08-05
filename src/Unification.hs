@@ -121,10 +121,13 @@ applyApTelescope = foldl' Ap
 -------------- the actual unification code ----------------------
 -----------------------------------------------------------------
 
-type FreshM = LogicT (Gen Id)
+type UnifyM = LogicT (Gen Id)
 type Constraint = (Term, Term)
 
-simplify :: Constraint -> FreshM (S.Set Constraint)
+-- | Given a constraint, produce a collection of equivalent but
+-- simpler constraints. Any solution for the returned set of
+-- constraints should be a solution for the original constraint.
+simplify :: Constraint -> UnifyM (S.Set Constraint)
 simplify (t1, t2)
   | t1 == t2 = return S.empty
   | reduce t1 /= t1 = simplify (reduce t1, t2)
@@ -155,7 +158,7 @@ manySubst s t = M.foldrWithKey (\mv sol t -> substMV sol mv t) t s
 s1 <+> s2 | not (M.null (M.intersection s1 s2)) = error "Impossible"
 s1 <+> s2 = M.union (manySubst s1 <$> s2) s1
 
-tryFlexRigid :: Constraint -> [FreshM [Subst]]
+tryFlexRigid :: Constraint -> [UnifyM [Subst]]
 tryFlexRigid (t1, t2)
   | (MetaVar i, cxt1) <- peelApTelescope t1,
     (stuckTerm, cxt2) <- peelApTelescope t2,
@@ -175,12 +178,12 @@ tryFlexRigid (t1, t2)
                  | t <- map LocalVar [0..bvars - 1] ++
                         if isClosed f then [f] else []]
 
-repeatedlySimplify :: S.Set Constraint -> FreshM (S.Set Constraint)
+repeatedlySimplify :: S.Set Constraint -> UnifyM (S.Set Constraint)
 repeatedlySimplify cs = do
   cs' <- fold <$> traverse simplify (S.toList cs)
   if cs' == cs then return cs else repeatedlySimplify cs'
 
-unify :: Subst -> S.Set Constraint -> FreshM (Subst, S.Set Constraint)
+unify :: Subst -> S.Set Constraint -> UnifyM (Subst, S.Set Constraint)
 unify s cs = do
   let cs' = applySubst s cs
   cs'' <- repeatedlySimplify cs'
@@ -195,7 +198,7 @@ unify s cs = do
         trySubsts [] cs = mzero
         trySubsts (mss : psubsts) cs = do
           ss <- mss
-          let these = foldr mplus mzero [unify (newS <+> s) cs | newS <- ss]
+          let these = foldr interleave mzero [unify (newS <+> s) cs | newS <- ss]
           let those = trySubsts psubsts cs
           these `interleave` those
 

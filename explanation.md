@@ -224,3 +224,113 @@ We are now in a position to turn to implementing the actual
 unification algorithm with all of our utilities in hand.
 
 ### The Unification Algorithm
+
+There are really only two key functions in implementing the
+unification algorithm. We can either take an existing constraint and
+simplify it, or take a constraint and produce a list of partial
+solutions, at least one of which is correct if the constraint is
+solvable. The first function is remarkably similar to the first-order
+case of unification, we essentially take a constraint and produce a
+set of constraints which are equivalent to the original one. For
+instance, if our constraint that we're trying to solve is
+
+``` haskell
+    FreeVar 0 `Ap` E === FreeVar 0 `Ap` E'
+```
+
+It's easy to see that we might as well solve constraint `E === E'`
+which is strictly simpler. This is what the function `simplify`
+does. It has the type
+
+``` haskell
+    simplify :: Constraint -> UnifyM (S.Set Constraint)
+```
+
+In order to work with generating fresh metavariables and (later)
+backtracking, we use the monad `UnifyM`. This is defined, as is
+`Constraint`, as a type synonym
+
+``` haskell
+    type UnifyM = LogicT (Gen Id)
+    type Constraint = (Term, Term)
+```
+
+Here we are using the package
+[logict](https://hackage.haskell.org/package/logict) to provide
+backtracking. My tutorial of this package can be found
+[here](https://jozefg.bitbucket.io/posts/2014-07-10-reading-logict.html). We
+are also using a package a threw together a few years ago called
+[`monad-gen`](https://hackage.haskell.org/package/monad-gen), it just
+provides a simple monad for generating fresh values. The sort of thing
+that I always end up needing in compilers. Without further-ado, let's
+start going through the cases for `simplify`. Each one of which
+
+``` haskell
+    simplify (t1, t2)
+      | t1 == t2 = return S.empty
+```
+
+We start out with a nice and simple case, if the two terms of the
+constraint are literally identical, we have no further goals. Next we
+have two cases integrating reduction. If either term is reducible at
+all we reduce it and try to simplify the remaining goals.
+
+``` haskell
+      | reduce t1 /= t1 = simplify (reduce t1, t2)
+      | reduce t2 /= t2 = simplify (t1, reduce t2)
+```
+
+This is how we integrate the fact that our unification is modulo
+reduction (we allow two terms to unify if they reduce to the same
+thing). Next comes the cases that are a little more sophisticated and
+correspond more closely to our original motivating example. If our two
+terms are a several things applied to free variables, we know the
+following
+
+ 1. The free variables have to be the same
+ 2. All of the arguments must unify
+
+This is captured by the following branch of simplify.
+
+``` haskell
+      | (FreeVar i, cxt) <- peelApTelescope t1,
+        (FreeVar j, cxt') <- peelApTelescope t2 = do
+          guard (i == j && length cxt == length cxt')
+          fold <$> mapM simplify (zip cxt cxt')
+```
+
+This code just codifies the procedure that we have informally sketched
+above. If we're trying to unify `A a1 ... an` and `B b1 ... bm` for
+two free variables `A` and `B` then we must have `A = B` and `n = m`
+since we have to find a solution that works for any `A` and any
+`B`. Finally, we then just need to unify `ai` with `bi`. The next two
+cases are congruence type rules. We basically just produce new
+constraints saying that `Lam e === Lam e'` if and only if `e ===
+e'`. There is a small amount of bookkeeping done to make sure that
+free variables are correctly represented by a globally unique
+`FreeVar i`. The same thing is done for `Pi` except, since `Pi`s are
+annotated with a type we also add a constraint for these types as well.
+
+``` haskell
+      | Lam body1 <- t1,
+        Lam body2 <- t2 = do
+          v <- FreeVar <$> lift gen
+          return $ S.singleton (subst v 0 body1, subst v 0 body2)
+      | Pi tp1 body1 <- t1,
+        Pi tp2 body2 <- t2 = do
+          v <- FreeVar <$> lift gen
+          return $ S.fromList
+            [(subst v 0 body1, subst v 0 body2),
+             (tp1, tp2)]
+```
+
+The final case is to decide whether or not the constraint is "stuck"
+on a metavariable, in which case we'll need to guess a solution for a
+metavariable or whether the constraint is just impossible. If neither
+constraint is stuck, we fail using `mzero` and if we're stuck then we
+just return the inputted constraint since we can make it no simpler.
+
+``` haskell
+      | otherwise =
+        if isStuck t1 || isStuck t2 then return $ S.singleton (t1, t2) else mzero
+```
