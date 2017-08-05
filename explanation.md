@@ -345,9 +345,10 @@ the form
 ```
 
 where `M` is a metavariable and `A` is a some term, probably a free
-variable. The first part of this code is to extract the relevant
-pieces of information from the constraint. Therefore, the code roughly
-looks like
+variable. These are called flex-rigid equations because one half is
+flexible, a metavariable, while one half is rigid. The first part of
+this code is to extract the relevant pieces of information from the
+constraint. Therefore, the code roughly looks like
 
 ``` haskell
     tryFlexRigid :: Constraint -> [UnifyM [Subst]]
@@ -381,6 +382,8 @@ an infinitely long list. More on this complication will
 follow. Therefore, we can replace `error "TODO"` with
 
 ``` haskell
+    type Subst = M.Map Id Term
+
     tryFlexRigid :: Constraint -> [UnifyM [Subst]]
     tryFlexRigid (t1, t2)
       | (MetaVar i, cxt1) <- peelApTelescope t1,
@@ -422,4 +425,111 @@ is little more to say than to just show the code.
       return [mkSubst . mkLam $ applyApTelescope t args
              | t <- map LocalVar [0..bvars - 1] ++
                     if isClosed f then [f] else []]
+```
+
+All that is left to do is to tie these two functions together in to
+try and produce a solution in general. One small caveat is that we
+need a few simple functions for working with substitutions. One to
+take a `Subst` and perform all the indicated replacements on a term
+and one to take two substitutions and perform a disjoint merge on
+them.
+
+``` haskell
+    manySubst :: Subst -> Term -> Term
+    manySubst s t = M.foldrWithKey (\mv sol t -> substMV sol mv t) t s
+
+    (<+>) :: Subst -> Subst -> Subst
+    s1 <+> s2 | not (M.null (M.intersection s1 s2)) = error "Impossible"
+    s1 <+> s2 = M.union (manySubst s1 <$> s2) s1
+```
+
+Now our main function, `unify` will take the current substitution and
+a set of constraints and produce a solution substitution and a set of
+flex-flex equations. These are equations of the form
+`M a1 ... an = M' b1 ... bn`. It is provable that so called flex-flex
+equations are always solvable (cf Huet's lemma) but solving them in a
+canonical way is impossible so we instead produce the solution "up to"
+flex-flex equations and let the user deal with the ambiguity however
+they choose. For example, such an equation in resulting from Agda's
+unification algorithm will produce the error "unresolved
+metavariables" because the metavariable is not canonically
+determined. Therefore, our main algorithm proceeds in the following
+steps
+
+1. Apply the given substitution to all our constraints.
+2. Simplify the set of constraints to remove any obvious ones.
+3. Separate flex-flex equations from flex-rigid ones.
+4. Pick a flex-rigid equation at random, if there are none, we're
+   done.
+5. Use `tryFlexRigid` to get a list of possible solutions
+6. Try each solution and attempt to unify the remaining constraints,
+   backtracking if we get stuck
+
+In order to implement 2, we define a function which is simply the
+"closure" of `simplify` and applies it until there is no more
+simplification to be done.
+
+``` haskell
+    repeatedlySimplify :: S.Set Constraint -> UnifyM (S.Set Constraint)
+    repeatedlySimplify cs = do
+      cs' <- fold <$> traverse simplify (S.toList cs)
+      if cs' == cs then return cs else repeatedlySimplify cs'
+```
+
+Apart from this, the main routine four unification is quite
+declarative
+
+``` haskell
+    unify :: Subst -> S.Set Constraint -> UnifyM (Subst, S.Set Constraint)
+    unify s cs = do
+      let cs' = applySubst s cs
+      cs'' <- repeatedlySimplify cs'
+      let (flexflexes, flexrigids) = S.partition flexflex cs''
+      if S.null flexrigids
+        then return (s, flexflexes)
+        else do
+          let psubsts = tryFlexRigid (S.findMax flexrigids)
+          trySubsts psubsts (flexrigids <> flexflexes)
+```
+
+The first line implements step 1, using
+`applySubst :: Subst -> S.Set Constraint -> S.Set Constraint` to apply
+our substitution. The next line simplifies the constraints so we're
+left with flex-flex or flex-rigid constraints. After this, we can
+partition the constraints into these two classes. From here, we simply
+implement steps 4-6 making use of the helper function `trySubst`
+
+``` haskell
+    trySubsts :: [UnifyM [Subst]] -> S.Set Constraint -> UnifyM (Subst,S.Set Constraint)
+```
+
+This function takes care of peeling out each substitution and applying
+it to the constraints we have lying around. In order to cope with the
+fact that all of these are potentially infinite and we need to fairly
+search the resulting space, we make use of
+`interleave :: m a -> m a -> m a` from `logict`. It's essentially
+equivalent to `mplus` from the list monad but search fairly in the
+case of infinite lists. This takes care of handling backtracking in a
+seamless and mostly invisible way, Haskell is fun sometimes! The code
+for implementing this is essentially just `interleave`-ing all the
+recursive calls to `unify` that we need to make using `mzero`,
+failure, for when we've run out of substitutions to try.
+
+``` haskell
+    trySubsts [] cs = mzero
+    trySubsts (mss : psubsts) cs = do
+      ss <- mss
+      let these = foldr interleave mzero [unify (newS <+> s) cs | newS <- ss]
+      let those = trySubsts psubsts cs
+      these `interleave` those
+```
+
+Putting all of this code together, we have completed a higher-order
+unificaiton algorithm! To make a top-level function to play with, we
+add a driver function which runs `unify` and strips out all of the
+monads of `UnifyM`
+
+``` haskell
+    driver :: Constraint -> Maybe (Subst, S.Set Constraint)
+    driver = listToMaybe . runGenFrom 100 . observeAllT . unify M.empty . S.singleton
 ```

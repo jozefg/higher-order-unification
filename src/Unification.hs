@@ -151,6 +151,8 @@ simplify (t1, t2)
 
 type Subst = M.Map Id Term
 
+-- | Generate all possible solutions to flex-rigid equations as an
+-- infinite list of computations producing finite lists.
 tryFlexRigid :: Constraint -> [UnifyM [Subst]]
 tryFlexRigid (t1, t2)
   | (MetaVar i, cxt1) <- peelApTelescope t1,
@@ -171,6 +173,7 @@ tryFlexRigid (t1, t2)
                  | t <- map LocalVar [0..bvars - 1] ++
                         if isClosed f then [f] else []]
 
+-- | The reflexive transitive closure of @simplify@
 repeatedlySimplify :: S.Set Constraint -> UnifyM (S.Set Constraint)
 repeatedlySimplify cs = do
   cs' <- fold <$> traverse simplify (S.toList cs)
@@ -183,6 +186,9 @@ manySubst s t = M.foldrWithKey (\mv sol t -> substMV sol mv t) t s
 s1 <+> s2 | not (M.null (M.intersection s1 s2)) = error "Impossible"
 s1 <+> s2 = M.union (manySubst s1 <$> s2) s1
 
+-- | The top level function, given a substitution and a set of
+-- constraints, produce a solution substution and the resulting set of
+-- flex-flex equations.
 unify :: Subst -> S.Set Constraint -> UnifyM (Subst, S.Set Constraint)
 unify s cs = do
   let cs' = applySubst s cs
