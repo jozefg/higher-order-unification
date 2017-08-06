@@ -1,5 +1,19 @@
 {-# LANGUAGE FlexibleContexts #-}
-module Unification where
+module Unification
+  ( Id(..)
+  , Index(..)
+  , Term(..)
+  , raise
+  , subst
+  , substMV
+  , manySubst
+  , substFV
+  , UnifyM (..)
+  , Constraint(..)
+  , Subst (..)
+  , unify
+  , runUnifyM
+  , driver) where
 import           Control.Monad
 import           Control.Monad.Gen
 import           Control.Monad.Logic
@@ -62,6 +76,17 @@ substMV new i t = case t of
   Ap l r -> substMV new i l `Ap` substMV new i r
   Lam body -> Lam (substMV (raise 1 new) i body)
   Pi tp body -> Pi (substMV new i tp) (substMV (raise 1 new) i body)
+
+-- | Substitute a term for all free variable with a given identifier.
+substFV :: Term -> Id -> Term -> Term
+substFV new i t = case t of
+  FreeVar j -> if i == j then new else FreeVar j
+  MetaVar i -> MetaVar i
+  LocalVar i -> LocalVar i
+  Uni -> Uni
+  Ap l r -> substFV new i l `Ap` substFV new i r
+  Lam body -> Lam (substFV (raise 1 new) i body)
+  Pi tp body -> Pi (substFV new i tp) (substFV (raise 1 new) i body)
 
 -- | Gather all the metavariables in a term into a set.
 metavars :: Term -> S.Set Id
@@ -129,7 +154,7 @@ type Constraint = (Term, Term)
 -- constraints should be a solution for the original constraint.
 simplify :: Constraint -> UnifyM (S.Set Constraint)
 simplify (t1, t2)
-  | t1 == t2 = return S.empty
+  | t1 == t2 && S.null (metavars t1) = return S.empty
   | reduce t1 /= t1 = simplify (reduce t1, t2)
   | reduce t2 /= t2 = simplify (t1, reduce t2)
   | (FreeVar i, cxt) <- peelApTelescope t1,
@@ -208,7 +233,10 @@ unify s cs = do
           let those = trySubsts psubsts cs
           these `interleave` those
 
+runUnifyM :: UnifyM a -> [a]
+runUnifyM = runGenFrom 100 . observeAllT
+
 -- | Solve a constraint and return the remaining flex-flex constraints
 -- and the substitution for it.
 driver :: Constraint -> Maybe (Subst, S.Set Constraint)
-driver = listToMaybe . runGenFrom 100 . observeAllT . unify M.empty . S.singleton
+driver = listToMaybe . runUnifyM . unify M.empty . S.singleton
