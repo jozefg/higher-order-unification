@@ -38,7 +38,7 @@ typeOf mcxt cxt t = case t of
   Pi from to -> do
     v <- lift gen
     (fromTp, fromCs) <- typeOf mcxt cxt from
-    (toTp, toCs) <- typeOf mcxt (M.insert v from cxt) (subst (FreeVar v) 0 from)
+    (toTp, toCs) <- typeOf mcxt (M.insert v from cxt) (subst (FreeVar v) 0 to)
     return (Uni, fromCs <> toCs <> S.fromList [(Uni, fromTp), (Uni, toTp)])
 
 infer :: Term -> Maybe (Term, S.Set Constraint)
